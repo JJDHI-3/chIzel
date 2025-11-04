@@ -1,0 +1,14 @@
+CC=gcc
+SRC=chIzel.c
+OUT=chIzel
+LFLG=-lncurses
+
+default:
+	@$(CC) $(SRC) -o $(OUT) $(LFLG)
+	@sudo mv $(OUT) /bin/
+
+c:
+	rm -rf /bin/$(OUT)
+
+clean:
+	@$(MAKE) c
