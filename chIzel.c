@@ -21,10 +21,32 @@ typedef enum {
 static char buffer[MAX_LINES][MAX_COLS];
 static int line_count = 1;
 static int cur_row = 0, cur_col = 0;
+static int top_row = 0; // ADDED: Top visible line of the buffer
 static bool modified = false;
 static char filename[256] = {0};
 static char cmd_feedback[128] = {0};
 static bool syntax_c = false; // toggled by :tsc, disabled by :tsc! or :!tsc
+
+#define MAX_COLS 512
+extern char buffer[/* MAX_LINES */][MAX_COLS]; 
+extern int line_count;
+
+static const char *EMACS_HEADER = "// Emacs style mode select -*- C -*-";
+
+bool is_emacs_header_present() {
+    // 1. Check if the buffer is non-empty
+    if (line_count == 0) {
+        return false;
+    }
+
+    // 2. Use strcmp to compare the content of buffer[0] with the expected header.
+    // strcmp returns 0 if the two strings are identical.
+    if (strcmp(buffer[0], EMACS_HEADER) == 0) {
+        return true;
+    }
+
+    return false;
+}
 
 // Color pair IDs
 enum {
@@ -141,8 +163,9 @@ static bool is_word_boundary(char c) {
 }
 
 // Draw a single line with C syntax highlighting
-static void draw_line_with_syntax(int row, int gutter, int max_x) {
-    const char *line = buffer[row];
+// UPDATED: Takes 'screen_row' (where to draw) and 'buffer_row' (what to read)
+static void draw_line_with_syntax(int screen_row, int buffer_row, int gutter, int max_x) {
+    const char *line = buffer[buffer_row];
     const char *p = line;
     int x = gutter;
     bool in_string = false, in_char = false, in_comment = false, in_preproc = false;
@@ -160,7 +183,7 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
         if (!in_comment && strncmp(p, "//", 2) == 0) {
             if (in_preproc) { attroff(COLOR_PAIR(CP_C_PREPROC)); in_preproc = false; }
             attron(COLOR_PAIR(CP_C_COMMENT));
-            mvaddstr(row, x, p);
+            mvaddstr(screen_row, x, p);
             attroff(COLOR_PAIR(CP_C_COMMENT));
             break;
         }
@@ -168,26 +191,26 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
             if (in_preproc) { attroff(COLOR_PAIR(CP_C_PREPROC)); in_preproc = false; }
             in_comment = true;
             attron(COLOR_PAIR(CP_C_COMMENT));
-            mvaddch(row, x, *p); p++; x++;
-            if (*p && x < max_x - 1) { mvaddch(row, x, *p); p++; x++; }
+            mvaddch(screen_row, x, *p); p++; x++;
+            if (*p && x < max_x - 1) { mvaddch(screen_row, x, *p); p++; x++; }
             continue;
         }
         if (in_comment) {
             if (strncmp(p, "*/", 2) == 0) {
-                mvaddch(row, x, *p); p++; x++;
-                if (*p && x < max_x - 1) { mvaddch(row, x, *p); p++; x++; }
+                mvaddch(screen_row, x, *p); p++; x++;
+                if (*p && x < max_x - 1) { mvaddch(screen_row, x, *p); p++; x++; }
                 attroff(COLOR_PAIR(CP_C_COMMENT));
                 in_comment = false;
                 continue;
             }
-            mvaddch(row, x, *p); p++; x++;
+            mvaddch(screen_row, x, *p); p++; x++;
             continue;
         }
 
         // Brackets: darker type color
         if (*p=='(' || *p==')' || *p=='{' || *p=='}' || *p=='[' || *p==']') {
             attron(COLOR_PAIR(CP_C_BRACKET));
-            mvaddch(row, x, *p); p++; x++;
+            mvaddch(screen_row, x, *p); p++; x++;
             attroff(COLOR_PAIR(CP_C_BRACKET));
             continue;
         }
@@ -195,9 +218,9 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
         // Strings (ensure both quotes green, with escaping)
         if (*p == '"' && !in_char) {
             attron(COLOR_PAIR(CP_C_STRING));
-            mvaddch(row, x, *p); p++; x++;
+            mvaddch(screen_row, x, *p); p++; x++;
             while (*p && x < max_x - 1) {
-                mvaddch(row, x, *p);
+                mvaddch(screen_row, x, *p);
                 if (*p == '"' && (*(p - 1) != '\\')) {
                     p++; x++;
                     break;
@@ -211,9 +234,9 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
         // Char literals
         if (*p == '\'' && !in_string) {
             attron(COLOR_PAIR(CP_C_STRING));
-            mvaddch(row, x, *p); p++; x++;
+            mvaddch(screen_row, x, *p); p++; x++;
             while (*p && x < max_x - 1) {
-                mvaddch(row, x, *p);
+                mvaddch(screen_row, x, *p);
                 if (*p == '\'' && (*(p - 1) != '\\')) {
                     p++; x++;
                     break;
@@ -227,9 +250,9 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
         // Angle-brackets in includes: green
         if (*p == '<' && in_preproc) {
             attron(COLOR_PAIR(CP_C_STRING));
-            mvaddch(row, x, *p); p++; x++;
+            mvaddch(screen_row, x, *p); p++; x++;
             while (*p && x < max_x - 1) {
-                mvaddch(row, x, *p);
+                mvaddch(screen_row, x, *p);
                 if (*p == '>') {
                     p++; x++;
                     break;
@@ -244,7 +267,7 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
         if (isdigit((unsigned char)*p)) {
             attron(COLOR_PAIR(CP_C_NUMBER));
             while (*p && x < max_x - 1 && (isalnum((unsigned char)*p) || *p=='.' || *p=='x' || *p=='X')) {
-                mvaddch(row, x, *p);
+                mvaddch(screen_row, x, *p);
                 p++; x++;
             }
             attroff(COLOR_PAIR(CP_C_NUMBER));
@@ -264,7 +287,7 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
             char next = p[len];
             if (strncmp(p, types[k], len)==0 && is_word_boundary(prev) && is_word_boundary(next)) {
                 attron(COLOR_PAIR(CP_C_TYPE));
-                mvaddnstr(row, x, types[k], len);
+                mvaddnstr(screen_row, x, types[k], len);
                 attroff(COLOR_PAIR(CP_C_TYPE));
                 p += len; x += len;
                 matched_type = true;
@@ -278,7 +301,7 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
             // Detect special token 'pragma' and 'once' in the directive and color 'once' purple
             if (strncmp(p, "once", 4) == 0 && is_word_boundary((p==line)?' ':*(p-1)) && is_word_boundary(p[4])) {
                 attron(COLOR_PAIR(CP_C_SPECIAL));
-                mvaddnstr(row, x, "once", 4);
+                mvaddnstr(screen_row, x, "once", 4);
                 attroff(COLOR_PAIR(CP_C_SPECIAL));
                 p += 4; x += 4;
                 continue;
@@ -286,7 +309,7 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
             if (strncmp(p, "pragma", 6) == 0 && is_word_boundary((p==line)?' ':*(p-1)) && is_word_boundary(p[6])) {
                 // 'pragma' itself stays preproc green
                 attron(COLOR_PAIR(CP_C_PREPROC));
-                mvaddnstr(row, x, "pragma", 6);
+                mvaddnstr(screen_row, x, "pragma", 6);
                 attroff(COLOR_PAIR(CP_C_PREPROC));
                 p += 6; x += 6;
                 continue;
@@ -295,7 +318,7 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
             if (isdigit((unsigned char)*p)) {
                 attron(COLOR_PAIR(CP_C_NUMBER));
                 while (*p && x < max_x - 1 && (isalnum((unsigned char)*p) || *p=='.')) {
-                    mvaddch(row, x, *p);
+                    mvaddch(screen_row, x, *p);
                     p++; x++;
                 }
                 attroff(COLOR_PAIR(CP_C_NUMBER));
@@ -303,15 +326,35 @@ static void draw_line_with_syntax(int row, int gutter, int max_x) {
             }
             // Default preproc green
             attron(COLOR_PAIR(CP_C_PREPROC));
-            mvaddch(row, x, *p); p++; x++;
+            mvaddch(screen_row, x, *p); p++; x++;
             attroff(COLOR_PAIR(CP_C_PREPROC));
             continue;
         }
 
         // Default
-        mvaddch(row, x, *p); p++; x++;
+        mvaddch(screen_row, x, *p); p++; x++;
     }
 }
+
+// NEW: Function to adjust the viewport to keep the cursor visible
+static void scroll_view_to_cursor() {
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
+    int view_height = max_y - 2; // -2 for status/cmd lines
+
+    // If cursor is above the viewport
+    if (cur_row < top_row) {
+        top_row = cur_row;
+    }
+
+    // If cursor is below the viewport
+    if (cur_row >= top_row + view_height) {
+        top_row = cur_row - view_height + 1;
+    }
+
+    if (top_row < 0) top_row = 0;
+}
+
 
 static void draw(EditorMode mode, const char *cmdline, const GruvboxHardColors *t) {
     clear();
@@ -320,20 +363,27 @@ static void draw(EditorMode mode, const char *cmdline, const GruvboxHardColors *
     getmaxyx(stdscr, max_y, max_x);
     int gutter = 4; // "NNN " width
 
+    // NEW: Scroll the view before drawing
+    scroll_view_to_cursor();
+
     // Draw buffer lines and tildes
     for (int i = 0; i < max_y - 2; i++) {
-        if (i < line_count) {
-            if (i == cur_row) attron(COLOR_PAIR(CP_CURSORLINE));
+        int buffer_row = i + top_row; // Calculate buffer line index
+
+        if (buffer_row < line_count) {
+            if (buffer_row == cur_row) attron(COLOR_PAIR(CP_CURSORLINE));
             else attron(COLOR_PAIR(CP_NORMAL));
 
-            mvprintw(i, 0, "%d ", i + 1);
+            mvprintw(i, 0, "%d ", buffer_row + 1); // Draw line number at screen row 'i'
             if (syntax_c) {
-                draw_line_with_syntax(i, gutter, max_x);
+                // Call with screen row 'i' and buffer row 'buffer_row'
+                draw_line_with_syntax(i, buffer_row, gutter, max_x);
             } else {
-                mvaddnstr(i, gutter, buffer[i], max_x - gutter - 1);
+                // Draw buffer line at screen row 'i'
+                mvaddnstr(i, gutter, buffer[buffer_row], max_x - gutter - 1);
             }
 
-            if (i == cur_row) attroff(COLOR_PAIR(CP_CURSORLINE));
+            if (buffer_row == cur_row) attroff(COLOR_PAIR(CP_CURSORLINE));
             else attroff(COLOR_PAIR(CP_NORMAL));
         } else {
             attron(COLOR_PAIR(CP_TILDE));
@@ -368,8 +418,8 @@ static void draw(EditorMode mode, const char *cmdline, const GruvboxHardColors *
         attroff(COLOR_PAIR(CP_NORMAL));
     }
 
-    // Place cursor (account for gutter)
-    int vis_row = cur_row;
+    // Place cursor (account for gutter and scroll offset)
+    int vis_row = cur_row - top_row; // NEW: Cursor's screen row calculation
     int vis_col = cur_col + gutter;
     if (vis_row >= max_y - 2) vis_row = max_y - 3;
     if (vis_col >= max_x) vis_col = max_x - 1;
@@ -460,6 +510,7 @@ static void read_file() {
 
     cur_row = 0;
     cur_col = 0;
+    top_row = 0; // NEW: Reset scroll
     modified = false;
     snprintf(cmd_feedback, sizeof(cmd_feedback), "Read %s", filename);
 }
@@ -594,26 +645,27 @@ int main(int argc, char *argv[]) {
                     write_file();
                     break;
                 } else if (strcmp(cmdline, "tsc") == 0) {
-    syntax_c = true;
+                    syntax_c = true;
+                    if (!is_emacs_header_present()) {
+                        // Insert Emacs style header if not already present
+                        const char *header = "// Emacs style mode select -*- C -*-";
+                        if (line_count == 0 || strcmp(buffer[0], header) != 0) {
+                            // Shift lines down
+                            if (line_count < MAX_LINES) {
+                                memmove(&buffer[1], &buffer[0], line_count * MAX_COLS);
+                                strncpy(buffer[0], header, MAX_COLS - 1);
+                                buffer[0][MAX_COLS - 1] = '\0';
+                                line_count++;
+                                modified = true;
+                            }
+                        }
+                    }
 
-    // Insert Emacs style header if not already present
-    const char *header = "// Emacs style mode select -*- C -*-";
-    if (line_count == 0 || strcmp(buffer[0], header) != 0) {
-        // Shift lines down
-        if (line_count < MAX_LINES) {
-            memmove(&buffer[1], &buffer[0], line_count * MAX_COLS);
-            strncpy(buffer[0], header, MAX_COLS - 1);
-            buffer[0][MAX_COLS - 1] = '\0';
-            line_count++;
-            modified = true;
-        }
-    }
-
-    snprintf(cmd_feedback, sizeof(cmd_feedback), "C syntax highlighting enabled");
-    mode = MODE_NORMAL;
-    draw(mode, cmdline, theme);
-    continue;
-} else if (strcmp(cmdline, "tsc!") == 0 || strcmp(cmdline, "!tsc") == 0) {
+                    snprintf(cmd_feedback, sizeof(cmd_feedback), "C syntax highlighting enabled");
+                    mode = MODE_NORMAL;
+                    draw(mode, cmdline, theme);
+                    continue;
+                } else if (strcmp(cmdline, "tsc!") == 0 || strcmp(cmdline, "!tsc") == 0) {
                     syntax_c = false; // disable only with bang
                     snprintf(cmd_feedback, sizeof(cmd_feedback), "C syntax highlighting disabled");
                     mode = MODE_NORMAL;
