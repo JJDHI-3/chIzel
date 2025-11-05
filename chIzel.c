@@ -28,7 +28,7 @@ static char cmd_feedback[128] = {0};
 static bool syntax_c = false; // toggled by :tsc, disabled by :tsc! or :!tsc
 
 #define MAX_COLS 512
-extern char buffer[/* MAX_LINES */][MAX_COLS]; 
+extern char buffer[/* MAX_LINES */][MAX_COLS];
 extern int line_count;
 
 static const char *EMACS_HEADER = "// Emacs style mode select -*- C -*-";
@@ -560,6 +560,10 @@ int main(int argc, char *argv[]) {
 
     int ch;
     while (1) {
+        if (is_emacs_header_present()) {
+            syntax_c = true;
+        }
+
         ch = getch();
 
         if (mode == MODE_NORMAL) {
